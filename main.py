@@ -1,65 +1,111 @@
-# Install dependencies first if you don't have them
-# pip install requests beautifulsoup4 nltk
-
-import requests
-from bs4 import BeautifulSoup
-from nltk.tokenize import sent_tokenize
+import os
+import re
+import pdfplumber
 import nltk
 
-nltk.download('punkt')  # needed for sentence tokenizer
+# ------------------------------
+# 1️⃣ Setup
+# ------------------------------
+# Folder containing your PDFs
+PDF_FOLDER = "/Users/kristigong/Documents/GitHub/Diabete_KB/info_diabetes"  # <-- CHANGE THIS
+import os
 
-# -----------------------------
-# 1️⃣ List of diabetes-related URLs
-urls = [
-    "https://www.diabetes.org/diabetes/overview",
-    "https://www.who.int/news-room/fact-sheets/detail/diabetes",
-    "https://www.cdc.gov/diabetes/library/index.html"
-]
+if not os.path.exists(PDF_FOLDER):
+    raise FileNotFoundError(f"Folder not found: {PDF_FOLDER}")
+else:
+    print(f"Folder found: {PDF_FOLDER}")
 
-# -----------------------------
-# 2️⃣ Function to extract text from webpage
-def extract_text_from_url(url):
+
+import nltk
+import ssl
+
+# Bypass SSL issues (if any)
+try:
+    _create_unverified_https_context = ssl._create_unverified_context
+except AttributeError:
+    pass
+else:
+    ssl._create_default_https_context = _create_unverified_https_context
+
+# Download the correct tokenizer resource
+nltk.download('punkt_tab', quiet=True)
+
+# Chunk size in words
+CHUNK_SIZE = 200
+
+# Make sure NLTK punkt tokenizer is available
+try:
+    nltk.data.find('tokenizers/punkt')
+except LookupError:
+    import ssl
     try:
-        r = requests.get(url)
-        soup = BeautifulSoup(r.text, "html.parser")
-        # Extract paragraphs
-        paragraphs = [p.text for p in soup.find_all("p")]
-        text = " ".join(paragraphs)
-        return text
-    except Exception as e:
-        print(f"Error fetching {url}: {e}")
-        return ""
+        _create_unverified_https_context = ssl._create_unverified_context
+    except AttributeError:
+        pass
+    else:
+        ssl._create_default_https_context = _create_unverified_https_context
+    nltk.download('punkt')
 
-# -----------------------------
-# 3️⃣ Chunking function
-def chunk_text(text, chunk_size=500, overlap=50):
-    """
-    Split text into chunks of approx chunk_size words with overlap.
-    """
-    words = text.split()
+from nltk.tokenize import sent_tokenize
+
+# ------------------------------
+# 2️⃣ Extract text from PDFs
+# ------------------------------
+pdf_files = [f for f in os.listdir(PDF_FOLDER) if f.endswith('.pdf')]
+all_texts = []
+
+for pdf_file in pdf_files:
+    pdf_path = os.path.join(PDF_FOLDER, pdf_file)
+    text = ""
+    with pdfplumber.open(pdf_path) as pdf:
+        for page in pdf.pages:
+            page_text = page.extract_text()
+            if page_text:
+                text += page_text + "\n"
+    all_texts.append({"filename": pdf_file, "text": text})
+
+print(f"Extracted text from {len(all_texts)} PDFs.")
+
+# ------------------------------
+# 3️⃣ Preprocess text
+# ------------------------------
+def clean_text(text):
+    text = text.replace("\n", " ")       # Join lines
+    text = re.sub(r"\s+", " ", text)     # Collapse multiple spaces
+    return text.strip()
+
+for doc in all_texts:
+    doc['text'] = clean_text(doc['text'])
+    doc['sentences'] = sent_tokenize(doc['text'])
+
+# ------------------------------
+# 4️⃣ Chunk text for RAG
+# ------------------------------
+def chunk_text(sentences, chunk_size=200):
     chunks = []
-    start = 0
-    while start < len(words):
-        end = start + chunk_size
-        chunk = " ".join(words[start:end])
-        chunks.append(chunk)
-        start = end - overlap  # overlap words
+    chunk = []
+    word_count = 0
+    for sent in sentences:
+        words = sent.split()
+        chunk.append(sent)
+        word_count += len(words)
+        if word_count >= chunk_size:
+            chunks.append(" ".join(chunk))
+            chunk = []
+            word_count = 0
+    if chunk:
+        chunks.append(" ".join(chunk))
     return chunks
 
-# -----------------------------
-# 4️⃣ Main process
-all_chunks = []
+for doc in all_texts:
+    doc['chunks'] = chunk_text(doc['sentences'], chunk_size=CHUNK_SIZE)
 
-for url in urls:
-    text = extract_text_from_url(url)
-    if text:
-        chunks = chunk_text(text, chunk_size=300, overlap=50)  # you can adjust sizes
-        print(f"{len(chunks)} chunks created from {url}")
-        all_chunks.extend(chunks)
+# ------------------------------
+# 5️⃣ Output summary
+# ------------------------------
+for doc in all_texts:
+    print(f"\nFile: {doc['filename']}")
+    print(f"Total sentences: {len(doc['sentences'])}")
+    print(f"Total chunks: {len(doc['chunks'])}")
+    print(f"Example chunk: {doc['chunks'][0][:200]}...")  # show first 200 chars
 
-# -----------------------------
-# 5️⃣ Preview first 3 chunks
-for i, chunk in enumerate(all_chunks[:3]):
-    print(f"\n--- Chunk {i+1} ---\n")
-    print(chunk[:500])  # show first 500 characters
-    
