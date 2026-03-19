@@ -109,3 +109,106 @@ for doc in all_texts:
     print(f"Total chunks: {len(doc['chunks'])}")
     print(f"Example chunk: {doc['chunks'][0][:200]}...")  # show first 200 chars
 
+# -----------------------------------------------------
+#  Step 2 | Generate local Embeddings | no chatGPT API
+# -----------------------------------------------------
+
+
+import os
+from sentence_transformers import SentenceTransformer
+import json
+
+# Load your chunked data from Step 1
+# all_texts = [{'filename':..., 'chunks':[...]}]
+
+# Step 2a: Load a local embedding model
+# 'all-MiniLM-L6-v2' is small, fast, and works well
+model = SentenceTransformer('all-MiniLM-L6-v2')
+
+embeddings_data = []
+
+for doc in all_texts:
+    for i, chunk in enumerate(doc['chunks']):
+        vector = model.encode(chunk)  # vector is a list of floats
+        embeddings_data.append({
+            "filename": doc['filename'],
+            "chunk_index": i,
+            "text": chunk,
+            "embedding": vector.tolist()  # convert numpy array to list for JSON
+        })
+
+print(f"Created embeddings for {len(embeddings_data)} chunks.")
+
+# Step 2b: Save embeddings for later use
+with open("diabetes_chunks_embeddings_local.json", "w") as f:
+    json.dump(embeddings_data, f)
+
+print("Embeddings saved to diabetes_chunks_embeddings_local.json")
+
+
+# -------------------------------------------------
+# Step 3 | Build Retriever + Q&A System (Offline)
+# -------------------------------------------------
+
+import json
+import numpy as np
+import faiss
+from sentence_transformers import SentenceTransformer
+
+# ------------------------------
+# 1. Load embeddings
+# ------------------------------
+with open("diabetes_chunks_embeddings_local.json", "r") as f:
+    data = json.load(f)
+
+texts = [item["text"] for item in data]
+embeddings = [item["embedding"] for item in data]
+
+# Convert to numpy array
+embeddings = np.array(embeddings).astype("float32")
+
+print(f"Loaded {len(texts)} chunks.")
+
+# ------------------------------
+# 2. Create FAISS index
+# ------------------------------
+dimension = embeddings.shape[1]
+index = faiss.IndexFlatL2(dimension)
+index.add(embeddings)
+
+print("FAISS index created.")
+
+# ------------------------------
+# 3. Load embedding model (same as before!)
+# ------------------------------
+model = SentenceTransformer('all-MiniLM-L6-v2')
+
+# ------------------------------
+# 4. Ask function
+# ------------------------------
+def ask_question(query, top_k=3):
+    # Convert query to embedding
+    query_vector = model.encode([query]).astype("float32")
+
+    # Search similar chunks
+    distances, indices = index.search(query_vector, top_k)
+
+    print("\n🔍 Top relevant chunks:\n")
+    retrieved_texts = []
+
+    for i, idx in enumerate(indices[0]):
+        print(f"--- Result {i+1} ---")
+        print(texts[idx][:300], "...\n")
+        retrieved_texts.append(texts[idx])
+
+    # Combine retrieved context
+    context = "\n".join(retrieved_texts)
+
+    # Simple answer (no LLM yet)
+    print("🧠 Combined context (for LLM):\n")
+    print(context[:500], "...")
+
+# ------------------------------
+# 5. Test it
+# ------------------------------
+ask_question("What are symptoms of diabetes?")
